@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, TYPE_CHECKING
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 if TYPE_CHECKING:
@@ -59,10 +59,6 @@ DEFAULT_ENTRY_TEXT = (
 )
 DEFAULT_SLOT_SELECTOR = (
     "button, a, [role='button'], input[type='button'], input[type='submit'], label"
-)
-TIME_SLOT_PATTERN = re.compile(
-    r"(?:(?:오전|오후)\s*)?\d{1,2}\s*(?::|시)\s*\d{0,2}",
-    re.IGNORECASE,
 )
 BLOCKED_SLOT_WORDS = (
     "마감",
@@ -181,6 +177,16 @@ def click_first_enabled(page: "Page", selector: str) -> bool:
     return False
 
 
+def is_booking_page(page: "Page") -> bool:
+    try:
+        parsed = urlparse(page.url)
+    except Exception:
+        return False
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    return "booking.naver.com" in host or "booking" in host or "/booking/" in path
+
+
 def click_reservation_entry(page: "Page", config: WatchConfig) -> "Page | None":
     selectors = [
         "a",
@@ -238,7 +244,6 @@ def scan_enabled_time_slots(page: "Page", selector: str) -> list[str]:
           el.getAttribute('aria-disabled'),
           el.getAttribute('disabled'),
           el.getAttribute('data-disabled'),
-          el.getAttribute('aria-selected'),
           el.className,
         ].join(' ').toLowerCase();
         const lowered = `${text} ${attrs}`.toLowerCase();
@@ -246,7 +251,7 @@ def scan_enabled_time_slots(page: "Page", selector: str) -> list[str]:
           || el.getAttribute('aria-disabled') === 'true'
           || blockedWords.some((word) => lowered.includes(word.toLowerCase()));
       };
-      const timePattern = /(?:(?:오전|오후)\\s*)?\\d{1,2}\\s*(?::|시)\\s*\\d{0,2}/i;
+      const timePattern = /(?:(?:오전|오후)\s*)?\d{1,2}\s*(?::|시)\s*\d{0,2}/i;
       return Array.from(document.querySelectorAll(selector))
         .filter(isVisible)
         .map((el) => {
@@ -256,7 +261,7 @@ def scan_enabled_time_slots(page: "Page", selector: str) -> list[str]:
             el.getAttribute('aria-label'),
             el.getAttribute('title'),
             el.value,
-          ].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
+          ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
           return { el, text };
         })
         .filter(({ text }) => timePattern.test(text))
@@ -284,14 +289,15 @@ def has_enabled_time_slot(page: "Page", config: WatchConfig) -> bool:
 
 
 def is_available(page: "Page", config: WatchConfig) -> bool:
-    if has_enabled_time_slot(page, config):
+    if is_booking_page(page) and has_enabled_time_slot(page, config):
         return True
 
     reservation_page = click_reservation_entry(page, config)
     if reservation_page:
         reservation_page.wait_for_timeout(2_000)
-        if has_enabled_time_slot(reservation_page, config):
+        if is_booking_page(reservation_page) and has_enabled_time_slot(reservation_page, config):
             return True
+        print("예약 화면으로 들어가지 못했거나 시간 선택 화면이 아닙니다.")
 
     if config.click_selector:
         return has_enabled_click_target(page, config.click_selector)
