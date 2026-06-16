@@ -52,6 +52,30 @@ DEFAULT_UNAVAILABLE_TEXT = (
     "준비중",
     "오픈예정",
 )
+DEFAULT_ENTRY_TEXT = (
+    "예약",
+    "예약하기",
+    "네이버 예약",
+)
+DEFAULT_SLOT_SELECTOR = (
+    "button, a, [role='button'], input[type='button'], input[type='submit'], label"
+)
+TIME_SLOT_PATTERN = re.compile(
+    r"(?:(?:오전|오후)\s*)?\d{1,2}\s*(?::|시)\s*\d{0,2}",
+    re.IGNORECASE,
+)
+BLOCKED_SLOT_WORDS = (
+    "마감",
+    "매진",
+    "불가",
+    "없음",
+    "준비중",
+    "오픈예정",
+    "closed",
+    "disabled",
+    "soldout",
+    "unavailable",
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +86,9 @@ class WatchConfig:
     timeout_minutes: float | None
     available_text: tuple[str, ...]
     unavailable_text: tuple[str, ...]
+    entry_text: tuple[str, ...]
+    slot_selector: str
+    detect_mode: str
     click_selector: str | None
     headless: bool
     sound: bool
@@ -154,16 +181,128 @@ def click_first_enabled(page: "Page", selector: str) -> bool:
     return False
 
 
+def click_reservation_entry(page: "Page", config: WatchConfig) -> "Page | None":
+    selectors = [
+        "a",
+        "button",
+        "[role='button']",
+        "[onclick]",
+    ]
+    words = tuple(word for word in config.entry_text if word)
+    for frame in page.frames:
+        for selector in selectors:
+            targets = frame.locator(selector)
+            try:
+                count = min(targets.count(), 100)
+            except Error:
+                continue
+            for index in range(count):
+                target = targets.nth(index)
+                try:
+                    text = target.inner_text(timeout=500).strip()
+                    label = (
+                        target.get_attribute("aria-label", timeout=500)
+                        or target.get_attribute("title", timeout=500)
+                        or ""
+                    )
+                    combined = f"{text} {label}"
+                    if not any(word in combined for word in words):
+                        continue
+                    if target.is_visible(timeout=500) and target.is_enabled(timeout=500):
+                        before_pages = set(page.context.pages)
+                        target.click(timeout=3_000)
+                        page.wait_for_timeout(2_000)
+                        new_pages = [p for p in page.context.pages if p not in before_pages]
+                        if new_pages:
+                            new_pages[-1].wait_for_load_state("domcontentloaded", timeout=30_000)
+                            return new_pages[-1]
+                        return page
+                except Error:
+                    continue
+    return None
+
+
+def scan_enabled_time_slots(page: "Page", selector: str) -> list[str]:
+    script = """
+    ([selector, blockedWords]) => {
+      const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.visibility !== 'hidden'
+          && style.display !== 'none'
+          && rect.width > 0
+          && rect.height > 0;
+      };
+      const isBlocked = (el, text) => {
+        const attrs = [
+          el.getAttribute('aria-disabled'),
+          el.getAttribute('disabled'),
+          el.getAttribute('data-disabled'),
+          el.getAttribute('aria-selected'),
+          el.className,
+        ].join(' ').toLowerCase();
+        const lowered = `${text} ${attrs}`.toLowerCase();
+        return el.disabled === true
+          || el.getAttribute('aria-disabled') === 'true'
+          || blockedWords.some((word) => lowered.includes(word.toLowerCase()));
+      };
+      const timePattern = /(?:(?:오전|오후)\\s*)?\\d{1,2}\\s*(?::|시)\\s*\\d{0,2}/i;
+      return Array.from(document.querySelectorAll(selector))
+        .filter(isVisible)
+        .map((el) => {
+          const text = [
+            el.innerText,
+            el.textContent,
+            el.getAttribute('aria-label'),
+            el.getAttribute('title'),
+            el.value,
+          ].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
+          return { el, text };
+        })
+        .filter(({ text }) => timePattern.test(text))
+        .filter(({ el, text }) => !isBlocked(el, text))
+        .slice(0, 20)
+        .map(({ text }) => text);
+    }
+    """
+    slots: list[str] = []
+    for frame in page.frames:
+        try:
+            found = frame.evaluate(script, [selector, list(BLOCKED_SLOT_WORDS)])
+        except Error:
+            continue
+        slots.extend(str(slot) for slot in found if slot)
+    return slots
+
+
+def has_enabled_time_slot(page: "Page", config: WatchConfig) -> bool:
+    slots = scan_enabled_time_slots(page, config.slot_selector)
+    if slots:
+        print("클릭 가능한 시간 슬롯 후보:", ", ".join(slots[:5]))
+        return True
+    return False
+
+
 def is_available(page: "Page", config: WatchConfig) -> bool:
+    if has_enabled_time_slot(page, config):
+        return True
+
+    reservation_page = click_reservation_entry(page, config)
+    if reservation_page:
+        reservation_page.wait_for_timeout(2_000)
+        if has_enabled_time_slot(reservation_page, config):
+            return True
+
+    if config.click_selector:
+        return has_enabled_click_target(page, config.click_selector)
+
+    if config.detect_mode != "text":
+        return False
+
     text = visible_text(page)
     available_seen = bool(compile_text_pattern(config.available_text).search(text))
     unavailable_seen = bool(compile_text_pattern(config.unavailable_text).search(text))
-    clickable_seen = (
-        has_enabled_click_target(page, config.click_selector)
-        if config.click_selector
-        else False
-    )
-    return clickable_seen or (available_seen and not unavailable_seen)
+    return available_seen and not unavailable_seen
 
 
 def watch(config: WatchConfig) -> int:
@@ -290,6 +429,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="예약 불가 텍스트. 쉼표 구분. 기본값은 UNAVAILABLE_TEXT 환경변수.",
     )
     parser.add_argument(
+        "--entry-text",
+        default=os.getenv("ENTRY_TEXT"),
+        help="예약 화면으로 들어갈 버튼 텍스트. 쉼표 구분. 기본값은 ENTRY_TEXT 환경변수.",
+    )
+    parser.add_argument(
+        "--slot-selector",
+        default=os.getenv("SLOT_SELECTOR", DEFAULT_SLOT_SELECTOR),
+        help="시간 슬롯 후보 CSS selector. 기본값은 SLOT_SELECTOR 환경변수.",
+    )
+    parser.add_argument(
+        "--detect-mode",
+        choices=("slots", "text"),
+        default=os.getenv("DETECT_MODE", "slots"),
+        help="감지 방식. slots는 클릭 가능한 시간 슬롯만 인정, text는 문구 기준.",
+    )
+    parser.add_argument(
         "--click-selector",
         default=os.getenv("CLICK_SELECTOR"),
         help='예약 가능 시 클릭할 CSS selector. 기본값은 CLICK_SELECTOR 환경변수.',
@@ -340,6 +495,9 @@ def main(argv: list[str]) -> int:
         timeout_minutes=args.timeout_minutes,
         available_text=parse_csv(args.available_text, DEFAULT_AVAILABLE_TEXT),
         unavailable_text=parse_csv(args.unavailable_text, DEFAULT_UNAVAILABLE_TEXT),
+        entry_text=parse_csv(args.entry_text, DEFAULT_ENTRY_TEXT),
+        slot_selector=args.slot_selector,
+        detect_mode=args.detect_mode,
         click_selector=args.click_selector,
         headless=args.headless,
         sound=not args.no_sound,
