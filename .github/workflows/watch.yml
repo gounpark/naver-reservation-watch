@@ -28,12 +28,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          AVAILABLE_TEXT: ${{ secrets.AVAILABLE_TEXT }}
-          UNAVAILABLE_TEXT: ${{ secrets.UNAVAILABLE_TEXT }}
           ENTRY_TEXT: ${{ secrets.ENTRY_TEXT }}
           SLOT_SELECTOR: ${{ secrets.SLOT_SELECTOR }}
-          DETECT_MODE: ${{ secrets.DETECT_MODE }}
-          CLICK_SELECTOR: ${{ secrets.CLICK_SELECTOR }}
         run: |
           python naver_reservation_watch.py "${{ secrets.RESERVATION_URL }}" \
             --headless \
