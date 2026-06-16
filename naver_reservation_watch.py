@@ -34,12 +34,16 @@ except ModuleNotFoundError:
 
 
 DEFAULT_AVAILABLE_TEXT = (
-    "예약하기",
     "예약 가능",
-    "신청하기",
-    "예매하기",
+    "예약가능",
+    "선택 가능",
+    "선택가능",
 )
 DEFAULT_UNAVAILABLE_TEXT = (
+    "예약 가능한 시간이 없습니다",
+    "선택 가능한 시간이 없습니다",
+    "예약 가능한 날짜가 없습니다",
+    "잔여 예약 없음",
     "예약마감",
     "마감",
     "매진",
@@ -275,12 +279,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="지정한 분 뒤 종료. 기본값은 계속 실행.",
     )
-    parser.add_argument("--available-text", default=None, help="예약 가능 텍스트. 쉼표 구분.")
-    parser.add_argument("--unavailable-text", default=None, help="예약 불가 텍스트. 쉼표 구분.")
+    parser.add_argument(
+        "--available-text",
+        default=os.getenv("AVAILABLE_TEXT"),
+        help="예약 가능 텍스트. 쉼표 구분. 기본값은 AVAILABLE_TEXT 환경변수.",
+    )
+    parser.add_argument(
+        "--unavailable-text",
+        default=os.getenv("UNAVAILABLE_TEXT"),
+        help="예약 불가 텍스트. 쉼표 구분. 기본값은 UNAVAILABLE_TEXT 환경변수.",
+    )
     parser.add_argument(
         "--click-selector",
-        default=None,
-        help='예약 가능 시 클릭할 CSS selector. 예: button:has-text("예약하기")',
+        default=os.getenv("CLICK_SELECTOR"),
+        help='예약 가능 시 클릭할 CSS selector. 기본값은 CLICK_SELECTOR 환경변수.',
     )
     parser.add_argument("--headless", action="store_true", help="브라우저를 화면에 띄우지 않음")
     parser.add_argument("--no-sound", action="store_true", help="알림음 끄기")
